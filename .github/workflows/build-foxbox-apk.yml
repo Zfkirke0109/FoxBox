@@ -65,6 +65,17 @@ jobs:
           fetch-depth: 1
           submodules: false
 
+      - name: Restore prebuilt FreeRDP and native dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd UserLAndLibrary/remote-desktop-clients
+          curl --fail --location --retry 4 --retry-all-errors \
+            --output remote-desktop-clients-libs-1.tar.gz \
+            https://github.com/iiordanov/remote-desktop-clients/releases/download/dependencies/remote-desktop-clients-libs-1.tar.gz
+          test -s remote-desktop-clients-libs-1.tar.gz
+          bash ./download-prebuilt-dependencies.sh
+
       - name: Verify restored source tree
         shell: bash
         run: |
@@ -76,7 +87,7 @@ jobs:
           test -f UserLAndLibrary/remote-desktop-clients/bVNC/build.gradle
           test -f UserLAndLibrary/remote-desktop-clients/pubkeyGenerator/build.gradle
           test -f UserLAndLibrary/remote-desktop-clients/remoteClientLib/build.gradle
-          test -d UserLAndLibrary/remote-desktop-clients/remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore
+          test -f UserLAndLibrary/remote-desktop-clients/remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore/build.gradle
 
       - name: Set up Java 11
         uses: actions/setup-java@v4
