@@ -76,6 +76,24 @@ jobs:
           test -s remote-desktop-clients-libs-1.tar.gz
           bash ./download-prebuilt-dependencies.sh
 
+      - name: Checkout matching FreeRDP source
+        uses: actions/checkout@v4
+        with:
+          repository: FreeRDP/FreeRDP
+          ref: c0020308ebd33cefbd4548f03697f0c186a3631b
+          path: _freerdp_source
+          fetch-depth: 1
+          submodules: false
+
+      - name: Overlay FreeRDP source without deleting prebuilt native libraries
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DEST='UserLAndLibrary/remote-desktop-clients/remoteClientLib/jni/libs/deps/FreeRDP'
+          mkdir -p "$DEST"
+          rsync -a --exclude='.git' _freerdp_source/ "$DEST/"
+          test -f "$DEST/client/Android/Studio/freeRDPCore/build.gradle"
+
       - name: Verify restored source tree
         shell: bash
         run: |
