@@ -1,0 +1,92 @@
+name: Build FoxBox APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-foxbox-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build installable debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout FoxBox history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Use last publicly reproducible FoxBox source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # The current upstream FoxBox points at a UserLAndLibrary commit
+          # that is no longer publicly reachable. This FoxBox revision points
+          # at UserLAndLibrary 8751d21..., which is preserved in a public fork.
+          git checkout --force 72874faf7a7666dfbd782b22b1900b1ed26c8707
+
+      - name: Restore matching UserLAndLibrary and nested submodules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf UserLAndLibrary
+          git clone https://github.com/Lily-Rader/UserLAndLibrary.git UserLAndLibrary
+          git -C UserLAndLibrary checkout --force 8751d21debb0f336b2437106db46bc708e81b7d3
+          git -C UserLAndLibrary submodule sync --recursive
+          git -C UserLAndLibrary submodule update --init --recursive --jobs 4
+          git -C UserLAndLibrary submodule status --recursive
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            'platform-tools' \
+            'platforms;android-31' \
+            'build-tools;33.0.0'
+
+      - name: Replace retired JCenter repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sed -i 's/jcenter()/mavenCentral()/g' build.gradle
+
+      - name: Build FoxBox APK
+        shell: bash
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          ./gradlew --version
+          ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Show generated APKs
+        if: always()
+        shell: bash
+        run: |
+          find . -type f -name '*.apk' -print || true
+
+      - name: Upload FoxBox APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FoxBox-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
