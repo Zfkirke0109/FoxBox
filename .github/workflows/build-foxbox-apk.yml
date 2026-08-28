@@ -107,12 +107,11 @@ jobs:
           test -f UserLAndLibrary/remote-desktop-clients/remoteClientLib/build.gradle
           test -f UserLAndLibrary/remote-desktop-clients/remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore/build.gradle
 
-      - name: Set up Java 11
+      - name: Set up Java 17 for Android SDK tools
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
-          cache: gradle
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -125,6 +124,13 @@ jobs:
             'platform-tools' \
             'platforms;android-31' \
             'build-tools;33.0.0'
+
+      - name: Set up Java 11 for FoxBox Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
 
       - name: Replace retired JCenter repository
         shell: bash
@@ -139,6 +145,7 @@ jobs:
         run: |
           set -euxo pipefail
           chmod +x gradlew
+          java -version
           ./gradlew --version
           ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
