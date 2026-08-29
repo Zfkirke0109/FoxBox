@@ -82,7 +82,7 @@ jobs:
           repository: FreeRDP/FreeRDP
           ref: c0020308ebd33cefbd4548f03697f0c186a3631b
           path: _freerdp_source
-          fetch-depth: 1
+          fetch-depth: 0
           submodules: false
 
       - name: Overlay FreeRDP source without deleting prebuilt native libraries
@@ -93,6 +93,52 @@ jobs:
           mkdir -p "$DEST"
           rsync -a --exclude='.git' _freerdp_source/ "$DEST/"
           test -f "$DEST/client/Android/Studio/freeRDPCore/build.gradle"
+
+      - name: Make FreeRDP version discovery safe in CI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          GRADLE_FILE='UserLAndLibrary/remote-desktop-clients/remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/build.gradle'
+          python3 - "$GRADLE_FILE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          old = """def getVersionName = { ->
+              def stdout = new ByteArrayOutputStream()
+              exec {
+                  commandLine 'git', 'describe', '--tags'
+                  standardOutput = stdout
+              }
+              return stdout.toString().trim()
+          }
+          """
+          new = """def getVersionName = { ->
+              try {
+                  def stdout = new ByteArrayOutputStream()
+                  def stderr = new ByteArrayOutputStream()
+                  def result = exec {
+                      commandLine 'git', 'describe', '--tags', '--always', '--dirty'
+                      standardOutput = stdout
+                      errorOutput = stderr
+                      ignoreExitValue = true
+                  }
+                  def version = stdout.toString().trim()
+                  if (result.exitValue == 0 && version) {
+                      return version
+                  }
+              } catch (Exception ignored) {
+              }
+              return '0.0.0'
+          }
+          """
+          if old not in text:
+              raise SystemExit('Expected FreeRDP getVersionName block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          grep -q "ignoreExitValue = true" "$GRADLE_FILE"
+          grep -q "return '0.0.0'" "$GRADLE_FILE"
 
       - name: Verify restored source tree
         shell: bash
