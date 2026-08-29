@@ -241,7 +241,7 @@ jobs:
           sdkmanager \
             'platform-tools' \
             'platforms;android-31' \
-            'build-tools;33.0.0'
+            'build-tools;30.0.3'
 
       - name: Set up Java 11 for FoxBox Gradle
         uses: actions/setup-java@v4
@@ -269,33 +269,44 @@ jobs:
             ! grep -qE 'com\.jfrog\.bintray|com\.github\.dcendents\.android-maven|bintray-publish\.gradle' "$file"
           done
 
-      - name: Define nested FreeRDP Gradle compatibility properties
+      - name: Define legacy Android and FreeRDP Gradle compatibility
         shell: bash
         run: |
           set -euxo pipefail
-          python3 - build.gradle <<'PY'
+          python3 - build.gradle app/build.gradle CustomLibrary/build.gradle <<'PY'
           from pathlib import Path
           import sys
 
-          path = Path(sys.argv[1])
-          text = path.read_text()
+          root_path = Path(sys.argv[1])
+          text = root_path.read_text()
           anchor = "        appVersionName = '0.0.1'\n"
           compatibility_block = (
               "        // Required by the directly included FreeRDP Android library.\n"
               "        compileApi = 31\n"
               "        targetApi = 31\n"
               "        minApi = 21\n"
-              "        toolsVersion = '33.0.0'\n"
+              "        toolsVersion = '30.0.3'\n"
               "        versionCode = appVersionCode\n"
               "        versionName = appVersionName\n"
           )
-          if compatibility_block in text:
-              raise SystemExit(0)
-          if text.count(anchor) != 1:
-              raise SystemExit('Expected FoxBox version anchor not found exactly once')
-          path.write_text(text.replace(anchor, anchor + compatibility_block, 1))
+          if compatibility_block not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit('Expected FoxBox version anchor not found exactly once')
+              root_path.write_text(text.replace(anchor, anchor + compatibility_block, 1))
+
+          for module_name in sys.argv[2:]:
+              module_path = Path(module_name)
+              module_text = module_path.read_text()
+              old = '    buildToolsVersion "33.0.0"\n'
+              new = '    buildToolsVersion "30.0.3"\n'
+              if new in module_text:
+                  continue
+              if module_text.count(old) != 1:
+                  raise SystemExit(f'Expected one Build Tools 33.0.0 declaration in {module_path}')
+              module_path.write_text(module_text.replace(old, new, 1))
           PY
           sed -n '1,35p' build.gradle
+          grep -n 'buildToolsVersion' app/build.gradle CustomLibrary/build.gradle
 
       - name: Verify Gradle project configuration
         shell: bash
