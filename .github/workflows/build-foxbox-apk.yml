@@ -138,6 +138,19 @@ jobs:
           set -euxo pipefail
           sed -i 's/jcenter()/mavenCentral()/g' build.gradle
 
+      - name: Disable obsolete Termux publishing plugins
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for file in \
+            UserLAndLibrary/termux-app/terminal-emulator/build.gradle \
+            UserLAndLibrary/termux-app/terminal-view/build.gradle
+          do
+            sed -i '/^plugins {$/,/^}$/d' "$file"
+            sed -i "\|^apply from: '../scripts/bintray-publish.gradle'$|d" "$file"
+            ! grep -qE 'com\.jfrog\.bintray|com\.github\.dcendents\.android-maven|bintray-publish\.gradle' "$file"
+          done
+
       - name: Build FoxBox APK
         shell: bash
         env:
