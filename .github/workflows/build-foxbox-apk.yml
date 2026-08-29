@@ -256,6 +256,27 @@ jobs:
           set -euxo pipefail
           sed -i 's/jcenter()/mavenCentral()/g' build.gradle
 
+      - name: Replace unavailable JCenter-only SSH library
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DEPENDENCY_FILE='UserLAndLibrary/remote-desktop-clients/pubkeyGenerator/build.gradle'
+          python3 - "$DEPENDENCY_FILE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          old = "    api 'org.connectbot:sshlib:2.2.13'\n"
+          new = "    api 'org.connectbot:sshlib:2.2.17'\n"
+          if new in text:
+              raise SystemExit(0)
+          if text.count(old) != 1:
+              raise SystemExit('Expected sshlib 2.2.13 dependency not found exactly once')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          grep -n 'org.connectbot:sshlib:2.2.17' "$DEPENDENCY_FILE"
+
       - name: Disable obsolete Termux publishing plugins
         shell: bash
         run: |
