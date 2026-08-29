@@ -212,6 +212,95 @@ jobs:
           grep -q "ignoreExitValue = true" "$GRADLE_FILE"
           grep -q "return '0.0.0'" "$GRADLE_FILE"
 
+      - name: Define Android 12 FreeRDP component exports
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          android_uri = 'http://schemas.android.com/apk/res/android'
+          android = f'{{{android_uri}}}'
+          ET.register_namespace('android', android_uri)
+
+          manifest_path = Path(
+              'UserLAndLibrary/remote-desktop-clients/remoteClientLib/jni/libs/deps/'
+              'FreeRDP/client/Android/Studio/freeRDPCore/src/main/AndroidManifest.xml'
+          )
+          expected_exports = {
+              ('activity', '.presentation.ShortcutsActivity'),
+              ('activity-alias', '.presentation.CreateShortcuts'),
+              ('activity', '.presentation.BookmarkActivity'),
+              ('activity', '.presentation.SessionActivity'),
+              ('receiver', '.application.NetworkStateReceiver'),
+          }
+
+          parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+          tree = ET.parse(manifest_path, parser=parser)
+          root = tree.getroot()
+          found = set()
+          changed = False
+          for application in root.findall('application'):
+              for component in application:
+                  if not isinstance(component.tag, str):
+                      continue
+                  tag = component.tag.split('}')[-1]
+                  key = (tag, component.get(android + 'name'))
+                  if key not in expected_exports:
+                      continue
+                  found.add(key)
+                  exported = component.get(android + 'exported')
+                  if exported is None:
+                      component.set(android + 'exported', 'true')
+                      changed = True
+                  elif exported != 'true':
+                      raise SystemExit(f'Expected {tag} {key[1]} to remain exported')
+
+          missing_expected = sorted(expected_exports - found)
+          if missing_expected:
+              raise SystemExit(f'Expected FreeRDP components not found: {missing_expected}')
+          if changed:
+              ET.indent(tree, space='    ')
+              tree.write(manifest_path, encoding='utf-8', xml_declaration=True)
+
+          included_manifests = [
+              Path('app/src/main/AndroidManifest.xml'),
+              Path('CustomLibrary/src/main/AndroidManifest.xml'),
+              Path('UserLAndLibrary/app/src/main/AndroidManifest.xml'),
+              Path('UserLAndLibrary/termux-app/app/src/main/AndroidManifest.xml'),
+              Path('UserLAndLibrary/termux-app/terminal-emulator/src/main/AndroidManifest.xml'),
+              Path('UserLAndLibrary/termux-app/terminal-view/src/main/AndroidManifest.xml'),
+              Path('UserLAndLibrary/remote-desktop-clients/bVNC/src/main/AndroidManifest.xml'),
+              Path('UserLAndLibrary/remote-desktop-clients/pubkeyGenerator/src/main/AndroidManifest.xml'),
+              Path('UserLAndLibrary/remote-desktop-clients/remoteClientLib/src/main/AndroidManifest.xml'),
+              manifest_path,
+          ]
+          violations = []
+          for path in included_manifests:
+              manifest = ET.parse(path).getroot()
+              for application in manifest.findall('application'):
+                  for component in application:
+                      if not isinstance(component.tag, str):
+                          continue
+                      tag = component.tag.split('}')[-1]
+                      if tag not in {'activity', 'activity-alias', 'service', 'receiver'}:
+                          continue
+                      has_filter = any(
+                          child.tag.split('}')[-1] == 'intent-filter'
+                          for child in component
+                      )
+                      if has_filter and component.get(android + 'exported') is None:
+                          violations.append(
+                              f'{path}:{tag}:{component.get(android + "name")}'
+                          )
+          if violations:
+              raise SystemExit(
+                  'Android 12 components missing android:exported: ' + ', '.join(violations)
+              )
+          print('Android 12 component export contract verified')
+          PY
+
       - name: Verify restored source tree
         shell: bash
         run: |
