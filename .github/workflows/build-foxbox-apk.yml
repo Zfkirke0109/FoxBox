@@ -65,16 +65,88 @@ jobs:
           fetch-depth: 1
           submodules: false
 
+      - name: Cache validated prebuilt native dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/foxbox-dependencies/remote-desktop-clients-libs-1.tar.gz
+          key: ${{ runner.os }}-foxbox-remote-desktop-clients-libs-1-b8cbc1a46ca3237c7002d46737e01b3d9245c70fb78586114402a121a77b140c
+
       - name: Restore prebuilt FreeRDP and native dependencies
         shell: bash
         run: |
           set -euxo pipefail
-          cd UserLAndLibrary/remote-desktop-clients
-          curl --fail --location --retry 4 --retry-all-errors \
-            --output remote-desktop-clients-libs-1.tar.gz \
-            https://github.com/iiordanov/remote-desktop-clients/releases/download/dependencies/remote-desktop-clients-libs-1.tar.gz
-          test -s remote-desktop-clients-libs-1.tar.gz
-          bash ./download-prebuilt-dependencies.sh
+          readonly DEPENDENCY_URL='https://github.com/iiordanov/remote-desktop-clients/releases/download/dependencies/remote-desktop-clients-libs-1.tar.gz'
+          readonly EXPECTED_SHA256='b8cbc1a46ca3237c7002d46737e01b3d9245c70fb78586114402a121a77b140c'
+          readonly CACHE_DIR="${RUNNER_TEMP}/foxbox-dependencies"
+          readonly ARCHIVE="${CACHE_DIR}/remote-desktop-clients-libs-1.tar.gz"
+          readonly PART_ARCHIVE="${ARCHIVE}.part"
+          readonly CLIENTS_DIR='UserLAndLibrary/remote-desktop-clients'
+
+          validate_archive() {
+            local archive_path="$1"
+            test -s "$archive_path" &&
+              printf '%s  %s\n' "$EXPECTED_SHA256" "$archive_path" | sha256sum --check --status &&
+              gzip -t "$archive_path" &&
+              tar -tzf "$archive_path" >/dev/null
+          }
+
+          mkdir -p "$CACHE_DIR"
+          if ! validate_archive "$ARCHIVE"; then
+            rm -f "$ARCHIVE" "$PART_ARCHIVE"
+            trap 'rm -f "$PART_ARCHIVE"' EXIT
+
+            for attempt in 1 2 3 4 5; do
+              rm -f "$PART_ARCHIVE"
+              if curl \
+                --fail \
+                --location \
+                --show-error \
+                --connect-timeout 20 \
+                --max-time 300 \
+                --output "$PART_ARCHIVE" \
+                "$DEPENDENCY_URL" &&
+                validate_archive "$PART_ARCHIVE"
+              then
+                mv "$PART_ARCHIVE" "$ARCHIVE"
+                break
+              fi
+
+              if [ "$attempt" -eq 5 ]; then
+                echo "Dependency download failed validation after ${attempt} attempts" >&2
+                exit 1
+              fi
+
+              delay=$((2 ** (attempt - 1)))
+              echo "Dependency download attempt ${attempt} failed; retrying in ${delay}s" >&2
+              sleep "$delay"
+            done
+          fi
+
+          validate_archive "$ARCHIVE"
+          install -m 0644 "$ARCHIVE" "$CLIENTS_DIR/remote-desktop-clients-libs-1.tar.gz"
+
+          pushd "$CLIENTS_DIR"
+          TAR_OPTIONS=--no-same-owner bash ./download-prebuilt-dependencies.sh
+
+          # The historical extractor expands FreeRDP at the checkout root.
+          # Normalize it to the nested location used by settings.gradle.
+          test -f FreeRDP/client/Android/Studio/freeRDPCore/build.gradle
+          mkdir -p remoteClientLib/jni/libs/deps/FreeRDP
+          rsync -a FreeRDP/ remoteClientLib/jni/libs/deps/FreeRDP/
+
+          for required_file in \
+            bVNC/libs/armeabi-v7a/libgstreamer_android.so \
+            bVNC/libs/armeabi-v7a/libspice.so \
+            bVNC/libs/armeabi-v7a/libsqlcipher.so \
+            remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore/build.gradle \
+            remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore/src/main/AndroidManifest.xml \
+            remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore/src/main/jniLibs.DISABLED/armeabi-v7a/libfreerdp-android.so \
+            remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore/src/main/jniLibs.DISABLED/armeabi-v7a/libfreerdp.so \
+            remoteClientLib/jni/libs/deps/FreeRDP/client/Android/Studio/freeRDPCore/src/main/jniLibs.DISABLED/armeabi-v7a/libwinpr.so
+          do
+            test -s "$required_file"
+          done
+          popd
 
       - name: Checkout matching FreeRDP source
         uses: actions/checkout@v4
@@ -169,7 +241,7 @@ jobs:
           sdkmanager \
             'platform-tools' \
             'platforms;android-31' \
-            'build-tools;33.0.0'
+            'build-tools;30.0.3'
 
       - name: Set up Java 11 for FoxBox Gradle
         uses: actions/setup-java@v4
@@ -184,6 +256,27 @@ jobs:
           set -euxo pipefail
           sed -i 's/jcenter()/mavenCentral()/g' build.gradle
 
+      - name: Replace unavailable JCenter-only SSH library
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DEPENDENCY_FILE='UserLAndLibrary/remote-desktop-clients/pubkeyGenerator/build.gradle'
+          python3 - "$DEPENDENCY_FILE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          old = "    api 'org.connectbot:sshlib:2.2.13'\n"
+          new = "    api 'org.connectbot:sshlib:2.2.3'\n"
+          if new in text:
+              raise SystemExit(0)
+          if text.count(old) != 1:
+              raise SystemExit('Expected sshlib 2.2.13 dependency not found exactly once')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          grep -n 'org.connectbot:sshlib:2.2.3' "$DEPENDENCY_FILE"
+
       - name: Disable obsolete Termux publishing plugins
         shell: bash
         run: |
@@ -196,6 +289,57 @@ jobs:
             sed -i "\|^apply from: '../scripts/bintray-publish.gradle'$|d" "$file"
             ! grep -qE 'com\.jfrog\.bintray|com\.github\.dcendents\.android-maven|bintray-publish\.gradle' "$file"
           done
+
+      - name: Define legacy Android and FreeRDP Gradle compatibility
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - build.gradle app/build.gradle CustomLibrary/build.gradle <<'PY'
+          from pathlib import Path
+          import sys
+
+          root_path = Path(sys.argv[1])
+          text = root_path.read_text()
+          anchor = "        appVersionName = '0.0.1'\n"
+          compatibility_block = (
+              "        // Required by the directly included FreeRDP Android library.\n"
+              "        compileApi = 31\n"
+              "        targetApi = 31\n"
+              "        minApi = 21\n"
+              "        toolsVersion = '30.0.3'\n"
+              "        versionCode = appVersionCode\n"
+              "        versionName = appVersionName\n"
+          )
+          if compatibility_block not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit('Expected FoxBox version anchor not found exactly once')
+              root_path.write_text(text.replace(anchor, anchor + compatibility_block, 1))
+
+          for module_name in sys.argv[2:]:
+              module_path = Path(module_name)
+              module_text = module_path.read_text()
+              old = '    buildToolsVersion "33.0.0"\n'
+              new = '    buildToolsVersion "30.0.3"\n'
+              if new in module_text:
+                  continue
+              if module_text.count(old) != 1:
+                  raise SystemExit(f'Expected one Build Tools 33.0.0 declaration in {module_path}')
+              module_path.write_text(module_text.replace(old, new, 1))
+          PY
+          sed -n '1,35p' build.gradle
+          grep -n 'buildToolsVersion' app/build.gradle CustomLibrary/build.gradle
+
+      - name: Verify Gradle project configuration
+        shell: bash
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          ./gradlew \
+            :remoteClientLib:jni:libs:deps:FreeRDP:client:Android:Studio:freeRDPCore:tasks \
+            --stacktrace \
+            --no-daemon
 
       - name: Build FoxBox APK
         shell: bash
